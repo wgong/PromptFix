@@ -290,8 +290,12 @@ def main():
     parser.add_argument("--config", default="configs/promptfix.yaml", type=str)
     parser.add_argument("--ckpt", default="./checkpoints/promptfix.ckpt", type=str)
     parser.add_argument("--vae-ckpt", default=None, type=str)
-    parser.add_argument("--indir", default='./examples/validation', type=str)
-    parser.add_argument("--outdir", default="validation_results/", type=str)
+    # out-of-box
+    # (indir,outdir) = ('./examples/validation', "validations/validation/")
+    # my test-1
+    (indir,outdir) = ('./examples/test-1', "validations/test-1/")
+    parser.add_argument("--indir", default=indir, type=str)
+    parser.add_argument("--outdir", default=outdir, type=str)
     parser.add_argument("--cfg-text", default=6.5, type=float)
     parser.add_argument("--cfg-image", default=1.25, type=float)
     parser.add_argument("--seed", default=2024, type=int)
