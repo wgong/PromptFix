@@ -20,31 +20,41 @@ Additional steps if needed:
 
 """
 import os
-os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+import time
 
+# Group all CUDA-related environment settings at the very top
+def setup_cuda_env(sleep_second=2):
+    os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+    os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+    os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
+    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:512'
+    # Give the environment variables time to take effect
+    time.sleep(sleep_second)
+
+# Call this before any other imports
+setup_cuda_env()
+
+from argparse import ArgumentParser
 
 import random
 import sys
-from argparse import ArgumentParser
-
 import json
-import einops
-import k_diffusion as K
-import numpy as np
-import torch
-import torch.nn as nn
-from einops import rearrange
 from omegaconf import OmegaConf
 from PIL import Image, ImageOps
-from torch import autocast
+import numpy as np
+
+import einops
+from einops import rearrange
+
+import k_diffusion as K
 from k_diffusion import utils
 from k_diffusion.sampling import default_noise_sampler, to_d, get_ancestral_step
+
+import torch
+import torch.nn as nn
+from torch import autocast
 from tqdm.auto import trange
 import torch.nn.functional as F
-
-# Add memory optimization settings
-torch.cuda.empty_cache()
-os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:512'
 
 sys.path.append("./stable_diffusion")
 
@@ -144,7 +154,136 @@ def load_model_from_config(config, ckpt, vae_ckpt=None, verbose=False):
     model = model.half()
     return model
 
+def check_output_exists(image_path, outdir):
+    """Check if both output and input images already exist."""
+    out_path = os.path.join(outdir, f"{image_path.split('.')[0]}.jpg")
+    input_path = os.path.join(outdir, f"{image_path.split('.')[0]}_input.jpg")
+    return os.path.exists(out_path) and os.path.exists(input_path)
+
+def reset_cuda(init_flag=False):
+    """
+    Manage CUDA device initialization and reset.
+    
+    Args:
+        init_flag (bool): True for initialization, False for reset only
+        
+    Returns:
+        tuple: (success (bool), device (torch.device), message (str))
+    """
+    try:
+        # Synchronize before checking availability
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
+        if not torch.cuda.is_available():
+            return False, None, "CUDA not available on this system"
+            
+        # Get the current device index (usually 0 for single GPU)
+        device_idx = torch.cuda.current_device()
+        device = torch.device(f"cuda:{device_idx}")
+        
+        # Common cleanup operations
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
+        
+        if init_flag:
+            # Force CUDA initialization
+            torch.cuda.init()
+            torch.cuda.set_device(device)
+            message = f"CUDA initialized on device {device_idx}: {torch.cuda.get_device_name(device_idx)}"
+            
+        else:
+            # Additional reset operations
+            if hasattr(torch.cuda, 'reset_accumulated_memory_stats'):
+                torch.cuda.reset_accumulated_memory_stats()
+            
+            # Force garbage collection
+            import gc
+            gc.collect()
+            
+            message = f"CUDA device {device_idx} reset successfully"
+            
+        # Print memory status
+        memory_allocated = torch.cuda.memory_allocated(device) / (1024**3)  # Convert to GB
+        memory_reserved = torch.cuda.memory_reserved(device) / (1024**3)    # Convert to GB
+        message += f"\nMemory status - Allocated: {memory_allocated:.2f}GB, Reserved: {memory_reserved:.2f}GB"
+
+        # Synchronize after operations
+        torch.cuda.synchronize()
+
+        if not torch.cuda.is_available():
+            return False, None, "CUDA became unavailable after operations"
+
+        return True, device, message
+        
+    except Exception as e:
+        return False, None, f"CUDA operation failed: {str(e)}"
+
+def initialize_model(config, ckpt, vae_ckpt=None):
+    """Initialize model with retry logic"""
+    max_retries = 3
+    current_try = 0
+    
+    while current_try < max_retries:
+        try:
+            # Clear any existing CUDA state
+            reset_cuda()
+            
+            print(f"Attempt {current_try + 1} of {max_retries} to initialize model...")
+            model = load_model_from_config(config, ckpt, vae_ckpt)
+            model = model.half().eval().cuda()
+            
+            # Enable memory optimizations
+            if hasattr(model, 'enable_attention_slicing'):
+                model.enable_attention_slicing()
+            if hasattr(model, 'enable_sequential_cpu_offload'):
+                model.enable_sequential_cpu_offload()
+            if hasattr(model, 'enable_gradient_checkpointing'):
+                model.enable_gradient_checkpointing()
+                
+            return model
+            
+        except RuntimeError as e:
+            current_try += 1
+            print(f"CUDA error on attempt {current_try}: {str(e)}")
+            
+            if "busy or unavailable" in str(e):
+                print("CUDA device is busy. Attempting to reset...")
+                reset_cuda()
+                # Wait a bit before retrying
+                import time
+                time.sleep(5)
+            
+            if current_try == max_retries:
+                print("Failed to initialize model after multiple attempts.")
+                print("You might need to:")
+                print("1. Check 'nvidia-smi' for running processes")
+                print("2. Kill any hanging processes: sudo fuser -v /dev/nvidia*")
+                print("3. As a last resort, reboot the machine")
+                raise RuntimeError("Failed to initialize CUDA device after multiple attempts")
+
+
 def main():
+    # Initialize CUDA with 3 retry
+    for attempt in range(3):
+        success, device, message = reset_cuda(init_flag=True)
+        if success:
+            break
+        print(f"CUDA reset attempt {attempt + 1} failed: {message}")
+        time.sleep(5)  # Wait between attempts
+    
+    if not success:
+        print("[ERROR] Could not initialize CUDA after multiple attempts.")
+        print("Suggested actions:")
+        print(SEP)
+        print("1. Check 'nvidia-smi' output")
+        print("2. Try: 'sudo fuser -v /dev/nvidia*' ")
+        print("3. Reboot the machine")
+        sys.exit(1)
+    
+    print(message)  # Print success message and memory status
+
+    # handle input args
     parser = ArgumentParser()
     parser.add_argument("--resolution", default=640, type=int)
     parser.add_argument("--steps", default=20, type=int)
@@ -158,6 +297,7 @@ def main():
     parser.add_argument("--seed", default=2024, type=int)
     parser.add_argument("--disable_hf_guidance", type=bool, default=True)
     parser.add_argument("--enable-flaw-prompt", type=bool, default=True)
+    parser.add_argument("--overwrite-outdir", type=bool, default=False)
     # Add these arguments to workaround OOM error
     max_resolution_default = 384  # 512
     parser.add_argument("--max-resolution", default=max_resolution_default, type=int, help="Maximum resolution for processing")
@@ -172,34 +312,17 @@ def main():
     if not torch.cuda.is_available():
         raise RuntimeError("No CUDA device available!")
 
-    device = torch.device("cuda")
-    torch.cuda.empty_cache()
-    torch.cuda.reset_peak_memory_stats()
-    torch.cuda.set_device(0)  # Explicitly set GPU device
-
     print(f"Using GPU: {torch.cuda.get_device_name(0)}")
     print(f"CUDA version: {torch.version.cuda}")
 
-    # Load model with optimizations
     try:
-        model = load_model_from_config(config, args.ckpt, args.vae_ckpt)
-        model = model.half().eval().cuda()
-    except RuntimeError as e:
-        print("Error loading model to GPU:", e)
-        print("Attempting to reset CUDA...")
-        torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats()
-        model = load_model_from_config(config, args.ckpt, args.vae_ckpt)
-        model = model.half().eval().cuda()
+        # Initialize model with retry logic
+        model = initialize_model(config, args.ckpt, args.vae_ckpt)
+    except Exception as e:
+        print(f"[ERROR] Fatal error initializing model: {str(e)}")
+        print("Please check your GPU status via 'nvidia-smi' and try again.")
+        sys.exit(1)
 
-   
-    # Enable memory optimizations
-    if hasattr(model, 'enable_attention_slicing'):
-        model.enable_attention_slicing()
-    if hasattr(model, 'enable_sequential_cpu_offload'):
-        model.enable_sequential_cpu_offload()
-    if hasattr(model, 'enable_gradient_checkpointing'):
-        model.enable_gradient_checkpointing()
 
     model_wrap = K.external.CompVisDenoiser(model)
     model_wrap_cfg = CFGDenoiser(model_wrap)
@@ -209,12 +332,18 @@ def main():
     
     instruct_dic = json.load(open(os.path.join(args.indir, 'instructions.json')))
 
-    
+    print("Begin processing images ...")
+    print(SEP)
     for val_img_idx, image_path in enumerate(instruct_dic):
         print("image_path and prompts:")
         print(SEP)
         print(image_path, instruct_dic[image_path])
         
+        # Check if output exists and skip if necessary
+        if not args.overwrite_outdir and check_output_exists(image_path, args.outdir):
+            print(f"Skipping {image_path} as output already exists. Use --overwrite-outdir True to force processing.")
+            continue
+
         try:
             # Process images in smaller resolution if needed
             input_image = Image.open(os.path.join(args.indir, image_path)).convert("RGB")
