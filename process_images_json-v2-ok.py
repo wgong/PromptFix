@@ -20,14 +20,10 @@ Additional steps if needed:
 
 """
 import os
-os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
-
-
 import random
 import sys
 from argparse import ArgumentParser
 
-import json
 import einops
 import k_diffusion as K
 import numpy as np
@@ -51,6 +47,7 @@ sys.path.append("./stable_diffusion")
 from stable_diffusion.ldm.util import instantiate_from_config
 from stable_diffusion.ldm.hfp import extract_high_freq_component, sobel_operator
 
+import json
 
 def sample_euler_ancestral(model, x, sigmas, extra_args=None, callback=None, disable=None, eta=1., s_noise=1., noise_sampler=None):
     extra_args = extra_args or {}
@@ -159,40 +156,18 @@ def main():
     parser.add_argument("--disable_hf_guidance", type=bool, default=True)
     parser.add_argument("--enable-flaw-prompt", type=bool, default=True)
     # Add these arguments to workaround OOM error
-    max_resolution_default = 384  # 512
-    parser.add_argument("--max-resolution", default=max_resolution_default, type=int, help="Maximum resolution for processing")
-    max_steps_default = 10  # 15 # 20
-    parser.add_argument("--max-steps", default=max_steps_default, type=int, help="Maximum number of steps")    
+    parser.add_argument("--batch-size", default=1, type=int, help="Batch size for processing")
+    parser.add_argument("--max-resolution", default=512, type=int, help="Maximum resolution for processing")
+    parser.add_argument("--max-steps", default=20, type=int, help="Maximum number of steps")    
     args = parser.parse_args()
     SEP = 80*"="
     config = OmegaConf.load(args.config)
     os.makedirs(args.outdir, exist_ok=True)
     
-    # Clear CUDA cache and reset GPU
-    if not torch.cuda.is_available():
-        raise RuntimeError("No CUDA device available!")
-
-    device = torch.device("cuda")
-    torch.cuda.empty_cache()
-    torch.cuda.reset_peak_memory_stats()
-    torch.cuda.set_device(0)  # Explicitly set GPU device
-
-    print(f"Using GPU: {torch.cuda.get_device_name(0)}")
-    print(f"CUDA version: {torch.version.cuda}")
-
     # Load model with optimizations
-    try:
-        model = load_model_from_config(config, args.ckpt, args.vae_ckpt)
-        model = model.half().eval().cuda()
-    except RuntimeError as e:
-        print("Error loading model to GPU:", e)
-        print("Attempting to reset CUDA...")
-        torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats()
-        model = load_model_from_config(config, args.ckpt, args.vae_ckpt)
-        model = model.half().eval().cuda()
-
-   
+    model = load_model_from_config(config, args.ckpt, args.vae_ckpt)
+    model.eval().cuda()
+    
     # Enable memory optimizations
     if hasattr(model, 'enable_attention_slicing'):
         model.enable_attention_slicing()
@@ -208,7 +183,6 @@ def main():
     seed = args.seed if args.seed is not None else random.randint(0, 100000)
     
     instruct_dic = json.load(open(os.path.join(args.indir, 'instructions.json')))
-
     
     for val_img_idx, image_path in enumerate(instruct_dic):
         print("image_path and prompts:")
@@ -219,7 +193,7 @@ def main():
             # Process images in smaller resolution if needed
             input_image = Image.open(os.path.join(args.indir, image_path)).convert("RGB")
             # Reduce resolution if memory is an issue
-            max_resolution = min(args.resolution, args.max_resolution)  # Limit maximum resolution
+            max_resolution = min(args.resolution, 512)  # Limit maximum resolution
             input_image = resize_image_to_resolution(input_image, max_resolution, 'inpaint' not in image_path)
             input_image_pil = input_image
             
@@ -242,7 +216,7 @@ def main():
                     }
 
                     # Reduce number of steps if memory is tight
-                    actual_steps = min(args.steps, args.max_steps) if 'inpaint' not in image_path else args.max_steps
+                    actual_steps = min(args.steps, 20) if 'inpaint' not in image_path else 30
                     sigmas = model_wrap.get_sigmas(actual_steps)
 
                     extra_args = {
