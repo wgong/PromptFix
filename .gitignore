@@ -5,3 +5,4 @@ src/
 checkpoints/
 __MACOSX/
 validation_results*
+docs/debug/*
