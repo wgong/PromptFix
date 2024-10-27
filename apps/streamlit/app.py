@@ -157,8 +157,8 @@ def prompt_fix_page():
     # Sidebar settings
     with st.sidebar:
         st.header("Settings")
-        resolution = st.slider("Resolution", 256, 1024, 512, 64)
-        steps = st.slider("Steps", 5, 50, 20, 1)
+        resolution = st.slider("Resolution", 256, 1024, 256, 64)
+        steps = st.slider("Steps", 5, 50, 5, 1)
         cfg_text = st.slider("Text CFG Scale", 1.0, 10.0, 6.5, 0.1)
         cfg_image = st.slider("Image CFG Scale", 0.1, 5.0, 1.25, 0.05)
         

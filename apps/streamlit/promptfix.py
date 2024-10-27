@@ -131,7 +131,7 @@ def resize_image_to_resolution(input_image, resolution, reverse=True):
     return ImageOps.fit(input_image, (new_width, new_height), method=Image.Resampling.LANCZOS)
 
 def process_image(model, image_path, output_path, task_prompt, context_prompt,
-                 resolution=512, steps=20, cfg_text=6.5, cfg_image=1.25,
+                 resolution=384, steps=10, cfg_text=6.5, cfg_image=1.25,
                  seed=2024, disable_hf_guidance=True, enable_flaw_prompt=True):
     """Process a single image using the PromptFix model"""
     try:

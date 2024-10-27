@@ -1,3 +1,5 @@
 {
-    "gettyimage-1.jpg": ["Remove watermark from the image.", "The image contains a prominent watermark"]
+    "gettyimage-1.jpg": ["Remove watermark from the image.", "The image contains a prominent watermark"],
+    "girl-bw-1.jpg": ["Enrich this photo with a myriad of colors.", "The image is a black-and-white photo"]
+
 }
